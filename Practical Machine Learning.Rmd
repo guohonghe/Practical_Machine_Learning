@@ -1,0 +1,234 @@
+---
+title: "Practical Machine Learning - Course Project"
+author: "Guohong He"
+date: "2/15/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+### I Overview
+
+This is the final report for Coursera's Practical Machine Learning course. In this report, we use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to quantify how well they do it, which is marked in variable "___classe___" in traing data set. 
+
+First, we will do data wrangling, such as removing variables with most being NAs, proceeding correlation and multi-collinearity analysis between variables, and removing near zero variance variables. Then, we will build four classification models by using k-folds cross validation on training data set. They are ___Decision Tree Model___, ___Random Forest Model___, ___Gradient Boosting Model___, ___Gradient Boosting Model___ and ___Support Vector Machine Model___. The accuracy from these models on validation data prediction will be used for model selection. In the end, the model with the best accuracy is used to predict test data set.  
+
+
+### II Background
+
+It is now possible to collect a large amount of data about personal activity relatively inexpensively by using devices such as Jawbone Up, Nike FuelBand, and Fitbit, even smart phones. These data can provide information to improve people's health, to find patterns in their behavior, to correct their movements, and to prevent some fatal accidents, such as falls of elder people.  
+
+In this project report, we use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to quantify how well they do it. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information about such a research is available from the website http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### III Data Wrangling
+
+#### 1 Load Dataset
+
+The training data can be downloaded from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv.
+
+The test data can be downloaded from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv.
+
+```{r}
+url.training <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url.testing  <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training <- read.csv(url(url.training))
+testing  <- read.csv(url(url.testing))
+```
+
+The classification of activities in this project is clearly specified in the article "___[Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf)___".  
+
+"Participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fash- ions: exactly according to the specification (Class A), throw- ing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg)".
+
+
+#### 2 Load Packages
+
+Couple of R libraries are uploaded for data wrangling and analysis. 
+
+```{r}
+library(dplyr); library(caret); library(rpart); library(rattle); library(randomForest); library(corrplot)
+set.seed(1)
+```
+
+
+#### 3 Data Wrangling
+
+Let's take a look at training and testing data.
+
+```{r}
+dim(training); dim(testing)
+# summary(training)
+```
+
+We have total ___`r dim(training)[2]`___ variables and ___`r dim(training)[1]`___ records in ___training___ data set. There are ___`r dim(testing)[1]`___ samples in testing data set waiting for prediction. 
+
+We also found some variables having lots of missing data (NAs) and some variables are not necessary for this project analysis, like timestamp, etc.. We are cleaning them up. All data wrangling process will be done on both ___training___ data and ___testing___ data at the same time.
+
+
+##### A Removing variables with NA more than 80%
+
+```{r}
+na_count <-sapply(training, function(x) sum(length(which(is.na(x)))/length(training[,1])))
+training <- training[,na_count<0.8]
+testing <- testing[,na_count<0.8]
+dim(training)
+```
+
+After removing variables with most NAs, reminding variables are reduced to ___`r dim(training)[2]`___.
+
+
+##### B Delete variables that are not necessary for this analysis, such as record count, user name, time stamp, etc 
+
+```{r}
+training <- training[,-c(1:7)]
+testing <- testing[,-c(1:7)]
+dim(training)
+```
+
+Now reminding variables are ___`r dim(training)[2]`___.
+
+
+##### C Removing Near Zero Variance (NZV) variables
+
+```{r}
+nzv <- nearZeroVar(training)
+training <- training[,-nzv]
+testing <- testing[,-nzv]
+dim(training)
+```
+
+After deleting those NZV variables, there are total ___`r dim(training)[2]`___ variables left.
+
+
+##### D Correlation and Multi-collinearity analysis 
+
+Now we examine the correlation and multi-collinearity between predictors and plot the correlation matrix. 
+
+```{r}
+corMatrix <- cor(training[,-53])
+corrplot(corMatrix, order = "FPC", method = "color", type = "upper", diag=FALSE,
+      tl.cex = 0.8, tl.col = rgb(0, 0, 0))
+```
+
+The variables having high correlation are shown in dark colors in the graph. Let's check how many those variables are ( correlation coefficient is larger than 0.9, which means their VIF larger than 10).
+
+```{r}
+highCorrelated <- findCorrelation(corMatrix, cutoff=0.9)
+names(training)[highCorrelated]
+```
+
+There are total  ___`r length(highCorrelated)`___ variables highly correlated. Theoretically, it is better to remove them from data set, or make a Principal Components Analysis (PCA) and build corresponding principal components. In this project, what we concerned is classification prediction and its accuracy. Luckily, the multi-collinearity of data set has no effects on it. Further more, we only have ___`r length(highCorrelated)`___ out of ___`r length(training[1,])-1`___ predictors having high correlation issue. Therefore, we don't do de-correlation pre-process in this project. 
+
+
+##### E Double Check Data and Factorizing Classification Dependent Variable
+
+```{r}
+#str(training)
+training$classe <- as.factor(training$classe)
+```
+
+
+### IV Build Prediction Models and Get their Accuracy by Cross Validation Method
+
+Four classification models are built by k-folds cross validation on training data set. There are ___Decision Tree___, ___Random Forest___, ___Gradient Boosting Tree___ and ___Support Vector Machine___. 
+
+First, we split ___training___ data to ___train___ and ___valid___ data sets for cross validation. We also setup training control parameter ___control___.
+
+```{r}
+inTrain <- createDataPartition(y=training$classe, p=0.7, list=F)
+train <- training[inTrain,]
+valid <- training[-inTrain,]
+control <- trainControl(method="cv", number=3, verboseIter=FALSE)
+```
+
+
+#### 1 Decision Tree Model
+
+```{r}
+mod.DT <- train(classe ~ . , data=train, method="rpart", trControl=control, tuneLength=5)
+fancyRpartPlot(mod.DT$finalModel)
+
+# Prediction on valid data
+pred.DT <- predict(mod.DT, valid)
+cm.DT <- confusionMatrix(pred.DT, valid$classe)
+cm.DT
+```
+
+
+#### 2 Random Forest Model
+
+```{r}
+mod.RF <- train(classe ~ . , data=train, method="rf", trControl=control, tuneLength=5)
+mod.RF$finalModel
+
+# Prediction on valid data
+pred.RF <- predict(mod.RF, valid)
+cm.RF <- confusionMatrix(pred.RF, factor(valid$classe))
+cm.RF
+```
+
+
+#### 3 Gradient Boosting Tree Model
+
+```{r}
+mod.GBM <- train(classe ~ . , data=train, method="gbm", trControl=control, tuneLength=5, verbose=FALSE)
+mod.GBM$finalModel
+
+# Prediction on valid data
+pred.GBM <- predict(mod.GBM, valid)
+cm.GBM <- confusionMatrix(pred.GBM, factor(valid$classe))
+cm.GBM
+```
+
+
+#### 4 Support Vector Machine Model
+
+```{r}
+mod.SVM <- train(classe ~ . , data=train, method="svmLinear", trControl=control, tuneLength=5, verbose=FALSE)
+mod.SVM$finalModel
+
+# Prediction on valid data
+pred.SVM <- predict(mod.SVM, valid)
+cm.SVM <- confusionMatrix(pred.SVM, factor(valid$classe))
+cm.SVM
+```
+
+
+#### 5 Accuracy Comparison between Four Classification Models
+
+```{r}
+Accuracy <- data.frame(DecisionTree=cm.DT$overall[1], RandomForest=cm.RF$overall[1], 
+                       GradientBoostingTree=cm.GBM$overall[1], SupportVectorMachine=cm.SVM$overall[1])
+round(Accuracy, 4) 
+```
+
+We can see the model ___`r names(which.max(Accuracy))`___ gives the highest accuracy of ___`r round(max(Accuracy),4)`___ on valid data set. We can plot its confusion matrix. ___`r names(which.max(Accuracy))` Model___ will be used to do prediction on testing data set.
+
+```{r}
+plot(cm.RF$table, col = cm.RF$byClass, main = paste("Random Forest Confusion Matrix - Accuracy =",
+                  round(cm.RF$overall['Accuracy'], 4)))
+```
+
+
+### V Prediction of Testing Data by Selected Best Accuracy Model
+
+```{r}
+pred.test.RF <- predict(mod.RF, testing)
+pred.test.RF
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
